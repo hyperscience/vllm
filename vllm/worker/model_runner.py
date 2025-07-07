@@ -7,6 +7,7 @@ import itertools
 import time
 import weakref
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import (TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set,
                     Tuple, Type, TypeVar, Union)
@@ -64,6 +65,10 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+GLOBAL_QUERY_SEQUENCE_BUFFER = []
+GLOBAL_KV_CACHE_BUFFER = None
+GLOBAL_KV_CACHE_METADATA_BUFFER = None
+
 LORA_WARMUP_RANK = 8
 
 _NUM_WARMUP_ITERS = 2
@@ -73,6 +78,16 @@ TModelInputForGPU = TypeVar('TModelInputForGPU', bound="ModelInputForGPU")
 # For now, bump up cache limits for recompilations during CUDA graph warmups.
 torch._dynamo.config.cache_size_limit = 128
 torch._dynamo.config.accumulated_cache_size_limit = 128
+
+
+def clean_global_query_sequence_buffer():
+    global GLOBAL_QUERY_SEQUENCE_BUFFER
+    GLOBAL_QUERY_SEQUENCE_BUFFER.clear()
+
+
+def get_global_query_sequence_buffer():
+    global GLOBAL_QUERY_SEQUENCE_BUFFER
+    return GLOBAL_QUERY_SEQUENCE_BUFFER
 
 
 @dataclass(frozen=True)
@@ -1663,6 +1678,11 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         if num_steps > 1:
             raise ValueError("num_steps > 1 is not supported in ModelRunner")
 
+        global GLOBAL_KV_CACHE_BUFFER
+        global GLOBAL_KV_CACHE_METADATA_BUFFER
+        GLOBAL_KV_CACHE_BUFFER = kv_caches
+        GLOBAL_KV_CACHE_METADATA_BUFFER = deepcopy(model_input.attn_metadata)
+
         if self.lora_config:
             assert model_input.lora_requests is not None
             assert model_input.lora_mapping is not None
@@ -1747,6 +1767,14 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
                                                  device=self.device),
                     **seqlen_agnostic_kwargs,
                     **model_kwargs,
+                )
+
+                # get the query for the current token from model's query_buffer
+                GLOBAL_QUERY_SEQUENCE_BUFFER.append(
+                    [
+                        layer_query_buffer.clone() 
+                        for layer_query_buffer in self.model.language_model.model.query_buffer
+                    ]
                 )
 
         if (self.observability_config is not None
