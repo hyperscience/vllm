@@ -89,6 +89,16 @@ def get_global_query_sequence_buffer():
     return GLOBAL_QUERY_SEQUENCE_BUFFER
 
 
+def get_global_kv_cache_buffer():
+    global GLOBAL_KV_CACHE_BUFFER
+    return GLOBAL_KV_CACHE_BUFFER
+
+
+def get_global_kv_cache_metadata_buffer():
+    global GLOBAL_KV_CACHE_METADATA_BUFFER
+    return GLOBAL_KV_CACHE_METADATA_BUFFER
+
+
 class GPUModelRunner(LoRAModelRunnerMixin):
 
     def __init__(
