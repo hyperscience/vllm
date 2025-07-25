@@ -182,7 +182,7 @@ class Qwen2Attention(nn.Module):
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
-        return output
+        return output, q[-1:, ...]
 
 
 class Qwen2DecoderLayer(nn.Module):
@@ -250,7 +250,7 @@ class Qwen2DecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
-        hidden_states = self.self_attn(
+        hidden_states, q = self.self_attn(
             positions=positions,
             hidden_states=hidden_states,
         )
@@ -259,7 +259,7 @@ class Qwen2DecoderLayer(nn.Module):
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
-        return hidden_states, residual
+        return hidden_states, residual, q
 
 
 @support_torch_compile(
@@ -283,6 +283,17 @@ class Qwen2Model(nn.Module):
         config = vllm_config.model_config.hf_config
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
+
+        self.register_buffer(
+            'query_buffer',
+            torch.zeros(
+                # 3584 hidden_size = 28 heads * 128 head dim
+                (config.num_hidden_layers, 1, config.hidden_size),
+                dtype=config.torch_dtype,
+                device=torch.cuda.current_device(),
+            ),
+            persistent=False,
+        )
 
         # TODO (@robertgshaw2): see if this can be moved out
         if (cache_config.sliding_window is not None
@@ -350,12 +361,14 @@ class Qwen2Model(nn.Module):
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
-        for layer in self.layers[self.start_layer:self.end_layer]:
-            hidden_states, residual = layer(
+        for i, layer in enumerate(self.layers[self.start_layer:self.end_layer]):
+            hidden_states, residual, q = layer(
                 positions,
                 hidden_states,
                 residual,
             )
+            self.query_buffer[i] = q
+
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
                 "hidden_states": hidden_states,

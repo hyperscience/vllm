@@ -87,6 +87,30 @@ else:
 
 logger = init_logger(__name__)
 
+GLOBAL_QUERY_SEQUENCE_BUFFER = []
+GLOBAL_KV_CACHE_BUFFER = None
+GLOBAL_KV_CACHE_METADATA_BUFFER = None
+
+
+def clean_global_query_sequence_buffer():
+    global GLOBAL_QUERY_SEQUENCE_BUFFER
+    GLOBAL_QUERY_SEQUENCE_BUFFER.clear()
+
+
+def get_global_query_sequence_buffer():
+    global GLOBAL_QUERY_SEQUENCE_BUFFER
+    return GLOBAL_QUERY_SEQUENCE_BUFFER
+
+
+def get_global_kv_cache_buffer():
+    global GLOBAL_KV_CACHE_BUFFER
+    return GLOBAL_KV_CACHE_BUFFER
+
+
+def get_global_kv_cache_metadata_buffer():
+    global GLOBAL_KV_CACHE_METADATA_BUFFER
+    return GLOBAL_KV_CACHE_METADATA_BUFFER
+
 
 class GPUModelRunner(LoRAModelRunnerMixin):
 
@@ -1364,6 +1388,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          spec_decode_metadata, num_scheduled_tokens_np,
          spec_decode_common_attn_metadata) = (
              self._prepare_inputs(scheduler_output))
+
+        global GLOBAL_KV_CACHE_BUFFER
+        global GLOBAL_KV_CACHE_METADATA_BUFFER
+        GLOBAL_KV_CACHE_BUFFER = self.kv_caches
+        GLOBAL_KV_CACHE_METADATA_BUFFER = copy.deepcopy(attn_metadata)
+
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         if (self.use_cuda_graph
                 and num_scheduled_tokens <= self.cudagraph_batch_sizes[-1]):
@@ -1461,6 +1491,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.maybe_wait_for_kv_save()
             finished_sending, finished_recving = (
                 self.get_finished_kv_transfers(scheduler_output))
+
+        # get the query for the current token from model's query_buffer
+        global GLOBAL_QUERY_SEQUENCE_BUFFER
+        GLOBAL_QUERY_SEQUENCE_BUFFER.append(
+            [
+                layer_query_buffer.clone()
+                for layer_query_buffer in self.model.language_model.model.query_buffer
+            ]
+        )
 
         if self.use_aux_hidden_state_outputs:
             hidden_states, aux_hidden_states = model_output
